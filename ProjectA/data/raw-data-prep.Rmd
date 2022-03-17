@@ -1,0 +1,137 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(janitor)
+library(haven)
+library(tidyverse)
+```
+
+
+Look at drinking/smoking on weight:
+  RC139 - How much do you weight (Outcome) (Continuous)
+  RC131 - Binge drinking in last 3 months (Continuous)
+  RC150 - Felt depressed in past yr (Binary)
+  RC118 - # cigarettes smoked per day (continuous)
+  RC129 - # Days drink alcohol per week (categorical)
+  
+Logistic regression
+
+  RCOVW670 - Has received vaccine (Binary) (Outcome)
+  RCOVW550 - Concerned about covid (Multi-cat)
+  RCOVW578 - Anyone you know died from covid (Binary)
+  RG086 - Volunteer work (Binary)
+  RCOVW600 - Money did you receive (continuous)
+
+  
+  
+
+Raw data from the HRS website is separated by interview category. I loaded up the three that I would like to take variables from. 
+
+
+```{r}
+c <- read_sas("data/h20sas/h20c_r.sas7bdat")
+
+cov <- read_sas("data/h20sas/h20cov_r.sas7bdat")
+
+g <- read_sas("data/h20sas/h20g_r.sas7bdat")
+```
+
+
+
+I filtered the tables to select the variables that I am going to use
+
+
+```{r}
+c <- c %>%
+  select(HHID, PN, RC139, RC131, RC150, RC118, RC129)
+  
+cov <- cov %>%
+  select(HHID, PN, RCOVW670, RCOVW550, RCOVW600, RCOVW578, RCOVW622, RCOVW577)
+
+g <- g %>%
+  select(HHID, PN, RG086)
+```
+
+
+
+I edited the tables to combine the two unique identifiers(HHID, PN) to create an overall identifier for each specific respondent. 
+
+```{r}
+c <- c %>%
+  mutate(OID = as.numeric(paste(HHID, PN, sep = "")))
+
+cov <- cov %>%
+  mutate(OID = as.numeric(paste(HHID, PN, sep = "")))
+
+g <- g %>%
+  mutate(OID = as.numeric(paste(HHID, PN, sep = "")))
+```
+
+
+
+I joined the tables together by the new unique identifier and cleaned up the variables that were created. 
+
+
+```{r}
+temp1 <- left_join(c, cov, by = "OID") %>%
+  rename(HHID = HHID.x,
+         PN = PN.x) %>%
+  select(-HHID.y, -PN.y)
+
+temp2 <- left_join(temp1, g, by = "OID") %>%
+  rename(HHID = HHID.x,
+         PN = PN.x) %>%
+  select(-HHID.y, -PN.y)
+```
+
+
+To avoid the complications that come with attempting to filter by complete cases on all 10 variables that I am going to use, I separate the new raw table into two smaller subsets that each contain complete cases for the variables that I want to use for each part of the project. This is to simply ensure that when I finalize my clean table I will have more than the minimum amount of observations.
+
+
+```{r}
+study1_raw <- temp2 %>%
+  filter(complete.cases(RC139, RC131, RC150, RC118, RC129))
+```
+
+
+```{r}
+study2_raw <- temp2 %>%
+  filter(complete.cases(RCOVW670, RCOVW550, RCOVW578, RG086, RCOVW600, RCOVW622, RCOVW577))
+```
+
+
+I full join the two tables together without specifying a variable argument. This combines all columns with the same name together and avoids the table from duplicating every variable.
+
+
+```{r}
+projectA_raw <- full_join(study1_raw, study2_raw)
+```
+
+
+I select the appropriate variables that were essentially duplicated from the full join to be the values from each previous separate table. 
+
+```{r}
+projectA_raw <- projectA_raw %>% 
+  select(OID, RC139, RC131, RC150, RC118, RC129, RCOVW670, RCOVW550, RCOVW578, RG086, RCOVW600, RCOVW622, RCOVW577)
+```
+
+
+I make sure that the new table does not have any duplicate values that would affect any results, so I check it to have unique identifier values. 
+
+
+```{r}
+a_raw <- unique(projectA_raw, by = "OID")
+```
+
+
+
+```{r}
+write_sas(a_raw, "a_raw.sas7bdat")
+```

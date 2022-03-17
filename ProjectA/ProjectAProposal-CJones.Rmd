@@ -1,0 +1,1125 @@
+---
+title: "COVID-19 Concerns on Vaccination Status and Smoking/Drinking Habits on Weight Within HRS Respondents"
+author: "Chris Jones"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown:
+    highlight: kate
+    number_sections: TRUE
+    code_folding: show
+---
+
+```{r setup, echo = FALSE, cache=FALSE}
+library(knitr)
+options(max.print="250")
+opts_chunk$set(comment=NA)
+opts_knit$set(width=75)
+```
+
+
+# R Packages and Setup {-}
+
+
+```{r packages, message=FALSE}
+library(ROCR)
+library(caret)
+library(simputation)
+library(car)
+library(naniar)
+library(haven)
+library(knitr)
+library(rmdformats)
+library(here)
+library(janitor)
+library(magrittr)
+library(rms)
+library(broom)
+library(tidyverse)
+```
+
+
+
+# 1. Data Source
+
+Data is obtained from the [Health and Retirement Study(HRS)](https://hrs.isr.umich.edu/about). HRS is a longitudinal panel study done by the University of Michigan attempting to analyze questions regarding aging. The first HRS interview took place in the year of 1992, and continued every other year. The data used consists of the [2020 HRS Core](https://hrsdata.isr.umich.edu/data-products/2020-hrs-core), which was collected during the period of March 2020 through May 2021.
+
+# 2. Subjects
+
+Subjects are individuals born in 1931 through 1941 and were household residents.
+
+
+
+# 3. Loading and Tidying Data
+
+
+
+## Loading Raw Data
+
+
+```{r}
+a_raw <- read_sas("data/a_raw.sas7bdat")
+```
+
+
+
+
+## Cleaning the Data
+
+
+
+### Cleaning Variables
+
+Removing the old identifiers as I use a new combined identifier based on household ID and person ID, as well as renaming variables to have meaningful names. 
+
+```{r}
+a <- a_raw %>%
+  rename(weight = RC139,
+         binge_drink = RC131,
+         depressed = RC150,
+         smoke_pday = RC118,
+         alc_pwk = RC129,
+         vaxxed = RCOVW670,
+         cov_concern = RCOVW550,
+         cov_death = RCOVW578,
+         volunteer = RG086,
+         cov_money = RCOVW600,
+         spending = RCOVW622,
+         cov_known = RCOVW577) 
+```
+
+
+
+Converting variables to appropriate variable types to be used for analysis
+
+```{r}
+a <- a %>%
+  mutate(OID = as.character(OID),
+         weight = as.numeric(weight),
+         binge_drink = as.numeric(binge_drink),
+         depressed = as.factor(depressed),
+         smoke_pday = as.numeric(smoke_pday),
+         alc_pwk = as.numeric(alc_pwk),
+         vaxxed = as.factor(vaxxed),
+         cov_concern = as.numeric(cov_concern),
+         cov_death = as.factor(cov_death),
+         volunteer = as.factor(volunteer),
+         cov_money = as.numeric(cov_money),
+         spending = as.factor(spending),
+         cov_known = as.factor(cov_known))
+```
+
+
+
+Mutated the binge drinking value into a multi-categorical variable. It was previously a continuous variable, however it only consisted of 10 unique values, which does not meet the requirements as a continuous variable. 
+
+```{r}
+a <- a %>%
+  mutate(alc_pwk = case_when(alc_pwk < 2  ~ "0-2",
+                             alc_pwk < 4 ~ "2-4",
+                             alc_pwk < 7 ~ "4-7",
+                             alc_pwk < 10 ~ "7-10"),
+         alc_pwk = as.factor(alc_pwk))
+```
+
+
+COVID-19 Concern is also used as a 1-10 scale, so I converted it into a multi-categorical variable with 5  descriptions of varying concern.
+
+```{r}
+a <- a %>%
+  mutate(cov_concern = case_when(cov_concern <= 3 ~ "Hardly concerned",
+                                 cov_concern <= 7 ~ "Some Concern",
+                                 cov_concern <= 10 ~ "Extreme Concern"),
+         cov_concern = as.factor(cov_concern))
+```
+
+
+Recoding the categorical variables to have meaningful values.
+
+
+```{r}
+a <- a %>%
+  mutate(cov_known = fct_recode(cov_known, "yes" = "1",
+                                "no" = "5"),
+         spending = fct_recode(spending, "up" = "1",
+                               "down" = "2",
+                               "same" = "3"),
+         vaxxed = fct_recode(vaxxed, "no" = "5",
+                             "yes" = "1"),
+         volunteer = fct_recode(volunteer, "yes" = "1",
+                                "no" = "5"),
+         cov_death = fct_recode(cov_death, "yes" = "1",
+                                "no" = "5"),
+         depressed = fct_recode(depressed, "yes" = "1",
+                                "no" = "5"))
+```
+
+
+
+
+
+```{r}
+a <- a %>%
+  mutate(depressed = na_if(depressed, "8"),
+         depressed = na_if(depressed, "9"),
+         depressed = na_if(depressed, "3"),
+         vaxxed = na_if(vaxxed, "8"),
+         cov_death = na_if(cov_death, "8"),
+         cov_death = na_if(cov_death, "9"),
+         volunteer = na_if(volunteer, "8"),
+         cov_known = na_if(cov_known, "8"),
+         cov_known = na_if(cov_known, "9"),
+         spending = na_if(spending, "8"),
+         spending = na_if(spending, "9"),
+         binge_drink = na_if(binge_drink, "98"),
+         binge_drink = na_if(binge_drink, "99"),
+         weight = na_if(weight, "998"),
+         weight = na_if(weight, "999"),
+         smoke_pday = na_if(smoke_pday, "-8"),
+         smoke_pday = na_if(smoke_pday, "98"),
+         cov_money = na_if(cov_money, 9999),
+         cov_money = na_if(cov_money, 9998)) %>%
+  
+  droplevels()
+```
+
+
+
+### Sampling data
+
+
+
+Since the current data set is over the 1200 observation limit, I chose to slice a random sample of 70% of the data, which also rounds out to close to around 1000 observations. Seed is set as the class number and year. 
+
+
+
+```{r}
+set.seed(4322022)
+a_sample <- a %>%
+  slice_sample(., prop = 0.7)
+```
+
+
+Data set does have missing values for some variables. These missing values can be handled with either single imputation or a complete case analysis. 
+
+
+
+
+# 4. The Tidy Tibble
+
+
+## Listing the Tibble
+
+```{r}
+a_sample
+```
+
+
+## Size and Identifier
+
+
+The tidy data set consists of 996 observations with 13 variables, which includes an identifier variable. 
+
+
+```{r}
+a_sample %>% n_distinct("OID")
+```
+
+
+## Saving the R Data Set
+
+
+Saving the table as an Rds file. 
+ 
+```{r}
+saveRDS(a_sample, file = "a_sample.Rds")
+```
+
+
+# 5. Codebook
+
+The codebook below includes all variables listed within the tidy data set to be used for this project. Descriptions of variables are taken from the codebook of the [HRS website](https://hrs.isr.umich.edu/sites/default/files/meta/2020/core/codebook/h20_00.html), with the original HRS variable name in parentheses for reference. Letters after R refer to the section of the study that the variable is found in. 
+
+
+Variable | Role | Type | Description
+---------- | ----- | ----- | ------------------
+OID     |  Identifier | - | Character code for Household ID + Personal ID
+weight | Outcome | quant | (RC139) Weight in pounds
+binge_drink | input | quant | (RC131) Days with 4+ alcoholic drinks in past 3 months
+depressed | input | binary | (RC150) Felt depressed for 2+ weeks straight over the past year
+smoke_pday | input | quant | (RC118) Estimated number of cigarettes smoked per day. 
+alc_pwk | input | 4-cat. | (RC129) Estimated Number of days per week in past 3 months having had alcohol
+vaxxed | Outcome | Binary | (RCOVW670) Have you received a vaccine?
+cov_concern | input | 5-cat. | (RCOVW550) How concerned are you about the coronavirus pandemic?
+cov_death | input | binary | (RCOVW578) Has anyone you know died from COVID-19?
+volunteer | input | binary | (RG086) Has spent any time in past 12 months doing volunteer work for a charitable organization
+cov_money | input | quant. | (RCOVW600) Amount of COVID-19 stimulus received
+cov_known | input | binary | (RCOVW577) Anyone else you know diagnosed with COVID-19
+spending  | input | 3-cat. | (RCOVW622) Has household spending changed? (Up/Down/Stayed Same)
+ 
+
+
+
+## Numerical Description
+
+
+```{r}
+Hmisc::describe(a_sample)
+```
+
+
+# 6. Linear Regression Plans
+
+
+How do smoking and drinking habits affect weight in HRS respondents?
+
+## My Quantitative Outcome
+
+The linear regression outcome that I am going to use is `weight`. I chose this variable because I was interested in looking for a variable that can be representative of physical health while usually having a good range of values. I also feel like weight is a bit less predictable than other usual quantitative health variables like blood pressure. 
+
+
+```{r}
+a_sample %>%
+  filter(complete.cases(weight)) %>%
+  summarise(count = n())
+```
+
+
+```{r}
+ggplot(a_sample, aes(x = weight)) + 
+  geom_histogram(col = "white",
+                 fill = "brown3") + 
+  theme_bw() + 
+  labs(title = "Distribution of Weight",
+       subtitle = "nobs = 996",
+       x = "Weight (lbs.)")
+```
+
+
+Based on the figure above, it appears that there is right skew for the outcome. Since there appears to only be slight skew that may require a log transformation at most. 
+
+
+
+## My Planned Predictors (Linear Model)
+
+The variables that I have chosen to be my predictors for the linear model are `binge_drink`, `depressed`, `smoke_pday`, and `alc_pwk`
+
+The variable `binge_drink` is a quantitative variable with 24 different unique values. 
+
+
+```{r}
+a_sample %>%
+  group_by(binge_drink) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+```
+
+The multi-categorical variable `alc_pwk` contains 4 categories, each with at least 30 observations. 
+
+```{r}
+a_sample %>%
+  select(alc_pwk) %>%
+  summary()
+```
+
+
+My model has 4 predictors, which is less than (4 + (996-100) / 100) 
+
+
+
+
+# 7. Logistic Regression Plans
+
+
+Can we predict vaccination status of HRS respondents based on lifestyle changes resulting from the COVID-19 pandemic?
+
+
+## My Binary Outcome
+
+The name of the binary variable I chose to use as my outcome is `vaxxed`. I wanted to know how the elderly have responded to the COVID-19 pandemic, and what kinds of social pressures play into their decisions on vaccination. 
+
+```{r}
+a_sample %>% filter(complete.cases(vaxxed)) %>%
+  summarise(count = n())
+```
+
+
+## My Planned Predictors (Logistic Model)
+
+
+My planned predictors for the logistic regression model are the variables `cov_concern`, `cov_death`, `volunteer`, `cov_money`, `cov_known` and `spending`
+
+
+`cov_concern` is a multi-categorical variable with 5 categories that each have more than 30 observations
+
+```{r}
+a_sample %>% select(cov_concern) %>%
+  summary()
+```
+
+`spending` is a 3-categorical variable with each group having more than 30 observations.
+
+```{r}
+a_sample %>% select(spending) %>%
+  summary()
+```
+
+
+
+
+`cov_money` is a quantitative variable with at least 10 unique values.
+
+
+
+```{r}
+a_sample %>% 
+  group_by(cov_money) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+```
+
+
+# 8: Linear Regression Analysis
+
+
+Creating the data set that I will use for the linear regression analysis. This involves selecting only the identifier, outcome, and predictor variables and filtering to have complete cases for the outcome. A total of 11 observations were filtered out. 
+
+```{r}
+a_linear <- a_sample %>% 
+  select(OID, weight, binge_drink, depressed, smoke_pday, alc_pwk) %>%
+  filter(complete.cases(weight))
+
+a_linear
+```
+
+
+
+
+
+## Missingness
+
+
+
+A missing variable summary is ran to see the number and percentage of missing values for each predictor. The highest that we see is the variable `smoke_pday` with 386 missing values, or 38.95%. Assuming MCAR and applying complete cases would drastically bias the results, and it is more realistic to assume MAR and use imputation. Because of the amount of missingness, I am going to use multiple imputation.
+
+
+
+```{r}
+miss_var_summary(a_linear)
+```
+
+## Outcome Transformation
+
+
+First I am going to look at the outcome variable `weight` using a boxCox and a histogram. This will let me observe the distribution and any recommended transformations based on a model. 
+
+
+```{r}
+ggplot(a_linear, aes(x = weight)) + 
+  geom_histogram(col = "white",
+                 fill = "brown3") + 
+  theme_bw() + 
+  labs(title = "Distribution of Weight",
+       subtitle = "nobs = 986",
+       x = "Weight (lbs.)")
+```
+
+
+```{r}
+a_linear %$%
+  boxCox(weight ~ binge_drink + depressed + alc_pwk + smoke_pday)
+```
+
+The histogram above shows some right skew with a few potential minor outliers. The boxCox utilizes the main effects model and appears to suggest a log transformation.
+
+
+```{r}
+ggplot(a_linear, aes(x = log(weight))) + 
+  geom_histogram(col = "white",
+                 fill = "brown3") + 
+  theme_bw() + 
+  labs(title = "Distribution of Weight",
+       subtitle = "nobs = 986",
+       x = "Weight (lbs.)")
+```
+
+
+After looking at a histogram of the log of weight, It looks like a normal distribution. I am satisfied with this and will continue with the outcome variable being a log transformation of `weight`. I will simply add a variable to the data that is `wt_log`.
+
+
+```{r}
+a_linear <- a_linear %>%
+  mutate(wt_log = log(weight))
+```
+
+
+
+## Scatterplot Matrix And Collinearity
+
+Before performing the scatterplot matrix, I know my dataset has a good amount of missingness. I plan on performing multiple imputation for the actual analysis, however I am going to use single imputation in developing the scatterplot matrix so I do not have to build an unnecessary amount of matrices. 
+
+
+```{r}
+set.seed(432)
+
+linear_si <- a_linear %>%
+  filter(complete.cases(depressed)) %>%
+  impute_rlm(smoke_pday ~  depressed) %>%
+  impute_rlm(binge_drink ~  depressed + smoke_pday) %>%
+  impute_cart(alc_pwk ~ binge_drink + depressed) %>%
+  tibble()
+```
+
+After I perform the imputation, I do a quick missing variable summary to make sure the imputation was performed properly.
+
+```{r}
+miss_var_summary(linear_si)
+```
+
+
+
+
+A scatterplot matrix of the variables is observed to look at correlation. The greatest value seen is 0.176 between the variables `binge_drink` and `smoke_pday`. However, this value only suggests a minor positive correlation. I don't necessarily see anything that sticks out, so I am comfortable running all of these variables together in a main effects model. 
+
+
+
+```{r}
+GGally::ggpairs(linear_si %>%
+                  select(wt_log, binge_drink, depressed, smoke_pday, alc_pwk))
+```
+
+
+## Model A
+
+
+The first model that is developed is the main effects model. this model is going to be developed using multiple imputation. Since there is a good amount of missingness, I am going to do more than the default amount of imputations. A model for the imputation is stored and used in developing the main effects model. 
+
+
+
+```{r}
+set.seed(432)
+dd <- datadist(a_linear)
+options(datadist = "dd")
+
+fit_imp <- aregImpute(~ alc_pwk + binge_drink  + smoke_pday + depressed, 
+                      data = a_linear,  nk = 0, B = 10, n.impute = 20)
+```
+
+
+The main effects model is created using ols as the fitter, with the data used as the `linear_train` data set. 
+
+
+```{r}
+m1ols <- fit.mult.impute(wt_log ~ alc_pwk + binge_drink + smoke_pday + depressed,
+                         fitter = ols, xtrans = fit_imp,
+                         data = a_linear, pr=  FALSE, x = TRUE, y = TRUE)
+```
+
+
+
+### Coefficients
+
+
+
+
+A tidied table of the coefficients is displayed. 
+
+```{r}
+kable(coef(m1ols), digits = 4)
+```
+
+### Summary Statistics
+
+
+Validate is performed on the model to do resampling and obtain a validated R-square statistic. The models test R-square is about half of the training R-square, and results in an index.corrected value of 0.01
+
+
+```{r}
+validate(m1ols)
+```
+
+
+
+Here I obtain the AIC and BIC values for the model to assess fit quality. 
+
+
+```{r}
+AIC(m1ols)
+
+BIC(m1ols)
+```
+
+
+
+
+### Residual Plots
+
+
+Residual plots cannot be obtained for the imputed model, so I can pull out a specific imputation and store it as a dataset to observe residual plots. For this case, I chose to look at the 3rd imputation. 
+
+```{r}
+imputed_3 <- 
+  impute.transcan(fit_imp, data = a_linear, imputation = 3,
+                  list.out = T, pr = F, check = F)
+
+imputed_df3 <- as.data.frame(do.call(cbind, imputed_3))
+
+third_imp <- 
+  bind_cols(oid = a_linear$OID, wt_log = a_linear$wt_log, imputed_df3) %>%
+  type.convert(as.is = FALSE) %>% tibble()
+```
+
+
+
+A model is made for the residual plots of the third imputation
+
+
+```{r}
+mod_resid_plots <- lm(wt_log ~ alc_pwk + binge_drink + depressed +smoke_pday, data = third_imp)
+```
+
+
+The glance function from the `broom` package shows the r.squared, AIC, and BIC from this specific imputation. This table indicates the model does not account for a lot of variation, with an r.squared value of 0.024.
+
+
+```{r}
+broom::glance(mod_resid_plots) %>%
+  select(r.squared, adj.r.squared, AIC, BIC, nobs, df, df.residual) %>%
+  kable(digits = 3)
+```
+
+
+Residual plots for the third imputation are displayed. Based on all of the plots below, I cannot see anything that appears out of the ordinary or that would be willing to go into further detail for. There is a large conglomeration of very low leverage observations, however the greatest leverage value is still below 0.06. 
+
+
+```{r}
+par(mfrow = c(2,2))
+plot(mod_resid_plots)
+par(mfrow=c(1,1))
+```
+
+
+
+
+
+
+## Non-linearity
+
+
+
+
+
+```{r}
+a_linear %$%
+  plot(spearman2(wt_log ~ alc_pwk + smoke_pday + binge_drink + depressed))
+```
+
+
+The plot above is a Spearman rho-squared plot shows that the variable `alc_pwk` is the strongest predictor. This is a multi-categorical variable so my course of action is to include an interaction term with the variable that is the second strongest predictor. These are both categorical variables and this interaction term will add an additional 6 degrees of freedom. 
+
+
+## Model B
+
+
+
+Again, I am going to do multiple imputation for the augmented model. This model is going to include an interaction term between `alc_pwk` and `smoke_pday`, as well as between `alc_pwk` and `depressed`.
+
+
+```{r}
+set.seed(432)
+dd <- datadist(a_linear)
+options(datadist = "dd")
+
+fit_imp2 <- aregImpute(~ alc_pwk + binge_drink  + smoke_pday + depressed, 
+                      data = a_linear,  nk = c(0, 4), tlinear = FALSE, B = 10, n.impute = 25, x = TRUE)
+```
+
+
+```{r}
+m2ols <- 
+  fit.mult.impute(wt_log ~ binge_drink + alc_pwk * depressed + smoke_pday + alc_pwk %ia% smoke_pday,
+                  fitter = ols, xtrans = fit_imp2,
+                  data = a_linear, pr = FALSE, x = TRUE, y = TRUE)
+```
+
+
+### ANOVA
+
+Here I am running an ANOVA of augmented model. This looks at the factors in the model and whether there is any detectable statistical significance. In the ANOVA for the main effects model, there appears to be statistical significance in `alc_pwk`. The augmented model does not add any statistical significance to the model. Interaction adds a total of 6 degrees of freedom, with a p-value of 0.92
+
+
+```{r}
+anova(m2ols)
+```
+
+
+### Nomogram
+
+
+Plotted below is a nomogram for the augmented linear regression model. We can see a large variation in the point contribution depending on the interaction of the terms. The nomogram splits the variable `smoke_pday` into different lines based on what groups the observation belongs to for `alc_pwk` and `depressed`. The two lines associated with having 0-2 drinks of alcohol per week are associated with the highest range of point contribution. The lowest is the appears to be when an individual has 7-10 drinks per week. This is interesting, suggesting that when including an interaction term with smoking per day and depressive status, individuals weigh more with a fewer amount of alcoholic drinks per week. 
+
+
+```{r, fig.height = 8}
+plot(nomogram(m2ols))
+```
+
+Below is the augmented models plot of effects. The only variable whose confidence interval does not pass 0 for this plot is `alc_pwk`. When changing alcohol consumption per week from the '0-2' group to the '7-10' group, the log of weight decreases by about 0.10. `alc_pwk` is an ordinal categorical variable that is based on numeric values, and this effect size indicates the most extreme change in category. 
+
+
+```{r}
+plot(summary(m2ols))
+```
+
+
+A residual vs. fitted plot is shown below. Although it does not appear to be a major concern, there does seem to be almost a separation at the 5.08 mark. 
+
+
+```{r}
+plot(resid(m2ols) ~ fitted(m2ols))
+```
+
+
+
+
+## Model Validation
+
+
+Below the validate() function is performed and a table of summary statistics is shown. The main effects model appears to have performed better on test sets, with a higher test r-square value and a higher index corrected R-square. Both models show a similar MSE for both test sets and index corrected. 
+
+
+```{r}
+set.seed(432) 
+validate(m1ols, method = "boot", B = 40)
+validate(m2ols, method = "boot", B = 40)
+```
+
+## Final Model 
+
+
+When considering both models, I think it is important to consider that both models do not appear to perform well. Neither model appears to account for more than 5% of variation, and this number decreases when using bootstrapped test data. As such, I do not feel that incorporating the additional 6 degrees of freedom is worthwhile so I would prefer the simpler main effects model. 
+
+
+
+
+
+
+Below will show a summary of the effect sizes for the main effects model as well as a plot for the effect sizes.
+
+
+```{r}
+summary(m1ols)
+```
+
+
+
+
+
+```{r}
+plot(summary(m1ols))
+```
+
+
+
+
+Based on the figures above, the effect change when going from 0-2 drinks per week to 7-10 drinks per week appears significant. Assuming all other variables are held constant, when changing `alc_pwk` groups from 0-2 to 7-10, the log of weight decreases by 0.11, with a 95% confidence interval (-0.16, -0.06). Based on this data, it could be that only larger changes in drinking habits are noticeable on affecting weight. 
+
+
+```{r}
+set.seed(432) 
+validate(m1ols, method = "boot", B = 40)
+```
+
+Another validation is ran to show the validated estimate of R-square for the main effects model. The test r-square value is 0.016, with an index corrected value of 0.009. This suggests that on training data the main effects model accounts for a bit less than 2% of variation. As a whole these statistics suggest that the model does not perform well, in both test and training sets.
+
+
+
+Code below creates a nomogram, and then creates a prediction for a mock observation. This model appears to indicate that binge drinking has essentially no effect on the log of weight. We can also observe a dramatic shift in points for the `alc_pwk` variable from '7-10' to '4-7'.
+
+```{r}
+plot(nomogram(m1ols))
+```
+
+A prediction is ran below for an individual that is not depressed but partakes in drinking and smoking. This individual is in the '7-0' category for `alc_pwk`, attributing 0 points here. The binge drink variable is negligible, a `smoke_pday` value of 10 seems to contribute about 17 points, and not being depressed contributes about 20 points. This comes out to a log(weight) prediction of about 5.06, which is a weight value of 158.07 lbs. 
+
+
+```{r}
+predict(m1ols,
+        expand.grid(alc_pwk = "7-10", binge_drink = 16, smoke_pday = 10, depressed = "no"),
+        conf.int = 0.95, conf.type = "individual") %>% as.data.frame() %>%
+  mutate(linear_exp = exp(linear.predictors),
+         lower_exp = exp(lower),
+         upper_exp = exp(upper))
+```
+
+
+
+# 9: Logistic Regression
+
+
+My first step is to create the data set for the logistic regression analysis. I am going to select the specified variables for the model and utilize complete cases for the outcome variable. 
+
+```{r}
+a_log <- a_sample %>%
+  select(OID, vaxxed, cov_concern, cov_death, cov_money, volunteer, spending, cov_known) %>%
+  filter(complete.cases(vaxxed))
+
+
+a_log
+```
+
+
+
+
+
+## Missingness
+
+
+```{r}
+miss_var_summary(a_log)
+```
+
+5 of the different variables within the data set have less than 3 missing observations that account for less than a percent of that variable, so for these I am going to filter by complete cases since this is not going to have a dramatic effect on the model.
+
+
+```{r}
+a_log <- a_log %>%
+  filter(complete.cases(cov_concern, cov_death, volunteer, spending, cov_known))
+```
+
+
+```{r}
+miss_var_summary(a_log)
+```
+
+
+This leaves me with only missing data for `cov_money` on slightly more than 10% of observations. Because this is not a large amount, I will go through this analysis using single imputation. 
+
+
+
+
+For performing single imputation, I first create a table using the bind_shadow() function to help with working with missing data. From the simputation package I use the `impute_rlm()` function for the continous variable `cov_money`, with a model using `cov_concern` + `cov_death` + `volunteer` as predictors. 
+
+
+
+```{r}
+a_log_sh <- bind_shadow(a_log)
+
+a_log_sh <- a_log_sh %>%
+  data.frame() %>%
+  impute_rlm(., cov_money ~ cov_concern + cov_death + volunteer) %>%
+  tibble()
+
+a_log_sh <- a_log_sh %>%
+  select(OID, vaxxed, cov_concern, cov_death, cov_money, volunteer, cov_known, spending)
+```
+
+
+```{r}
+miss_var_summary(a_log_sh)
+```
+
+
+
+
+## Model Y 
+
+
+
+Here I am creating the first model for the logistic regression, the main effects model. This model will use 6 variables collected in the covid section of the HRS survey. The model is fit using `lrm()`.
+
+
+```{r}
+d <- datadist(a_log_sh)
+options(datadist ="d")
+
+m1lrm <- lrm(vaxxed ~ cov_concern + cov_death + cov_money + volunteer + cov_known + spending,
+             data = a_log_sh, x = T, y = T)
+
+m1glm <- glm(vaxxed ~ cov_concern + cov_death + cov_money + volunteer + cov_known + spending,
+             data = a_log_sh, family = "binomial")
+
+```
+
+
+
+A model is also fit using `glm()` for its ease of use with certain summary statistics later on. 
+
+
+
+### Regression Coefficients
+
+
+A tidy table of the regression coefficients is shown. 
+
+
+
+```{r}
+kable(coef(m1lrm), digits = 4)
+```
+
+
+Below shows the `lrm` output, with information about the model as well as summary statistics. The model shows a Nagelkerke R-squared of 0.041, and a C-statistic of 0.610. In terms of model strength, these values do not suggest that the model is of pretty poor quality. The 'variable 'Some concern' and 'Hardly concerned' category for the variable `cov_concern` appear to have statistical significance at the alpha = 0.05 level.
+
+
+
+```{r}
+m1lrm
+```
+
+
+
+
+
+### Nomogram
+
+
+A nomogram is shown below for the model. One factor of this plot that is of note is the extreme difference in points assigned for he `cov_concern` variable, with the 'extreme concern' category contributing 0 points and the 'hardly concerned' category contributing 100 points. This also tells me that lower concern appears to increase the probability that someone has received the covid-19 vaccination.
+
+```{r}
+plot(nomogram(m1lrm, fun = plogis,
+              funlabel = "Pr(vaxxed)"))
+```
+
+
+### Confusion Matrix
+
+Here I am augmenting the glm model in order to fit a confusion matrix. 
+
+```{r}
+m1glm_aug <- augment(m1glm, a_log_sh, 
+                     type.predict ="response")
+```
+
+
+```{r}
+Hmisc::describe(m1glm_aug$.fitted)
+```
+
+
+
+When observing the `.fitted` values for the model, I noticed a range of about 0.55 to 0.99. Based on a summary table of the observed outcome, about 30% of the values are classified as "yes" for vaccination status. Using this criteria, I chose a .fitted value of .75 to be my predictor assuming this cutoff criteria is reflective of the proportion of observations that are "yes".
+
+
+```{r}
+m1glm_aug %$%
+  confusionMatrix(
+    data = factor(.fitted >= 0.70),
+    reference = factor(vaxxed == "yes"),
+    positive = "TRUE")
+```
+
+Using the above criteria, the confusion matrix produced an accuracy of 49.25%. This is not indicative of any strong predictive value. Sensitivity of 22.2% indicates that when a person is actually vaccinated, this model will be correct in predicting it only 22.2% of the time, which is extremely low. The specificity of 0.61 indicates that if a person is not vaccinated, the model will predict this correctly only 61% of the time. This is also an extremely low value for specificity. 
+
+
+## Non-Linearity
+
+
+
+
+```{r}
+plot(spearman2(vaxxed ~ cov_concern + cov_death + volunteer + cov_money + spending + cov_known, data = a_log_sh))
+```
+
+
+The spearman rho plot above shows that the multi-categorical variable `cov_concern` has the largest rho-square. I am going to add an interaction term between `cov_concern` and the variable with the second largest rho-square, `spending`. This is a categorical variable with 3 levels so this is going to add 6 degrees of freedom. 
+
+
+
+
+## Model Z
+
+
+Here I am going to create the augmented model. This model is going to include 1 nonlinear term, which is interaction between the variables `cov_concern` and `spending`. These are both multi-categorical variables, with `cov_concern` having 3 categories and `spending` with 3 categories as well. I am also going to fit a model using `gml()` for ease of use with summary statistics later. 
+
+
+```{r}
+dd <- datadist(a_log_sh)
+options(datadist = "dd")
+
+m2lrm <- lrm(vaxxed ~ cov_concern + cov_money + cov_death + volunteer + spending + cov_known + cov_concern %ia% spending, 
+             data = a_log_sh, x = T, y = T)
+
+
+m2glm <- glm(vaxxed ~ cov_concern + cov_death + cov_money + volunteer + cov_concern %ia% cov_money, data = a_log_sh,
+             family = "binomial"(link="logit"))
+```
+
+
+
+
+
+
+
+```{r}
+m2lrm
+```
+
+
+
+
+Below is a visual plot for the effect sizes of the augmented model. This plot looks at the effects as odds ratios. Based on the plot below, it seems that every effect shown has a confidence interval that contains an odds ratio of 1.00. Although not statistically significant, being somewhat concerned has slightly above 1.6 times the odds of being vaccinated versus being extremely concerned.
+
+
+```{r}
+plot(summary(m2lrm))
+```
+
+
+
+### Nomogram
+
+
+```{r, fig.height = 7.5}
+plot(nomogram(m2lrm, fun = plogis,
+              fun.at = c(seq(0.3, 2.0, by = 0.2)),
+              funlabel = "Pr(vaxxed)"))
+```
+
+The plot above is the nomogram for the augmented model, including a probability of being vaccinated. Based on the visualization above, the combination of being hardly concerned about covid-19 and decreased spending is a heavy contributor to probability of being vaccinated. We can also see that the continuous variable `cov_money` does not contribute much to the point total.
+
+
+
+### ANOVA
+
+
+
+A comparison of the ANOVA' from the main effects model and the augmented model are shown below. Here we can see that the addition of the interaction term between `cov_concern` and `spending` resulted in an increased 4 degrees of freedom. In the main effects model, the `cov_concern` variable appears to have statistical significance, while the augmented model does not have an variable with statistical significance. In fact, the lowest associated p-value is 0.19.
+
+
+```{r}
+anova(m2lrm)
+```
+
+
+
+
+
+
+
+
+### Confusion Matrix
+
+Here I am going to fit a confusion matrix for the augmented model
+
+```{r}
+m2glm_aug <- augment(m2glm, a_log_sh, 
+                     type.predict ="response")
+```
+
+
+
+The same criteria for the main effects model is applied to this confusion matrix. 
+
+
+```{r}
+m2glm_aug %$%
+  confusionMatrix(
+    data = factor(.fitted >= 0.7),
+    reference = factor(vaxxed == "yes"),
+    positive = "TRUE")
+```
+
+The confusion matrix for the augmented model shows an accuracy of 50.11%, barely higher than the main effects model. The sensitivity and specificity are also just barely higher, however this is still indicative of a poor predictive power.
+
+
+
+## Final Model
+
+
+For the logistic regression, the model that I prefer is the main effects model. 
+
+
+
+```{r}
+summary(m1lrm)
+```
+
+
+
+
+```{r, fig.height = 6}
+plot(summary(m1lrm))
+```
+
+The plot of effect sizes for the main effects model is shown above. This plot appears to indicate that reducing COVID-19 concern actually increases the odds of the individual being vaccinated. Having some concern is associated with 1.81 times the likelihood of being vaccinated versus extreme concern. Additionally, someone that is hardly concerned with COVID-19 2.55 times the odds of being vaccinated than someone that is extremely concerned with COVID-19. 
+
+
+### ROC curve
+
+
+Here I am creating a plot displaying the ROC curve. The model produces a C-statistic of 0.61, which is not very convincing. This value suggests that the model hardly performs better than random guessing. 
+
+
+```{r}
+prob <- predict(m1lrm, type = "fitted")
+pred <- prediction(prob, a_log_sh$vaxxed, label.ordering = c("yes", "no"))
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+auc <- performance(pred, measure = "auc")
+
+auc <- round(auc@y.values[[1]],3)
+roc.data <- data.frame(fpr=unlist(perf@x.values),
+                       tpr=unlist(perf@y.values),
+                       model="GLM")
+
+ggplot(roc.data, aes(x=fpr, ymin=0, ymax=tpr)) +
+  geom_ribbon(alpha=0.2, fill = "blue") +
+  geom_line(aes(y=tpr), col = "blue") +
+  geom_abline(intercept = 0, slope = 1, lty = "dashed") +
+  labs(title = paste0("Final Model: ROC Curve with AUC=", auc),
+       x = "False Positive Rate (FPR)",
+       y = "True Positive Rate(TPR)")
+```
+
+
+
+### Nagelkerke R-square and C-statistic
+
+Using the validate function, a corrected Nagelkerke R-square and C-statistic are obtained. The model shows worse prediction on the test set versus the training set. The index corrected Nagelkerke R-square indicates a pretty poor model, while the index corrected Dxy is 0.1335, which correlates to a C statistic of 0.567. This is not indicative of a strong predictive ability. 
+
+
+```{r}
+validate(m1lrm)
+```
+
+
+
+### Nomogram
+
+
+
+# 10. Discussion
+
+For this project, my linear and logistic regression sought to answer 2 questions. Using linear regression, how well can we predict the weight of HRS respondents based on smoking and drinking habits? Using logistic regression, how well are we able to determine COVID-19 vaccination status of HRS respondents based on how COVID-19 has affected their lives?
+
+For this project, finding and cleaning data was much harder than I expected. It is extremely difficult to find a data set that I felt comfortable working with. It is such a big task having to sort through documentation of different data sets, only to deal with the problems that come with needing to clean data and alter your analysis because of how the data is. I wish I knew how hard it is to find a suitable dataset because I would've spent more time for this process and set myself up to have an easier time with the analysis. I also would have attempted to include a larger raw data set with variables that I can just simply not use for my models. The most confusing part of the project was figuring out how to incorporate multiple imputation. I felt that using this complicated the way I needed to code certain things. However, I feel like this was also the most important thing I learned from this project. Since every data set faces complications and doing complete case analysis is unrealistic, knowing how to impute data seems really important and applicable. 
+
+
+
+# 11. Affirmation
+
+
+
+
+I am certain that it is completely appropriate for these data to be shared with anyone, without any conditions. There are no concerns about privacy or safety. 
+
+
+
+
+# 12. References 
+
+Data is obtained from the [Health and Retirement Study, HRS CORE 2020](https://hrsdata.isr.umich.edu/data-products/2020-hrs-core) public use data set. Health and Retirement Study is produced and distributed by the University of Michigan and funded by the National Institute on Aging (grant number NIA U01AG009740).
+
+
+# Session Information 
+
+```{r}
+xfun::session_info()
+```
+
+
+
+
+
+
+
+
+
