@@ -1,0 +1,896 @@
+---
+title: "Do Negative Influences/Substance Abuse Impact Income and Mental Status?"
+author: "Chris Jones"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::downcute:
+    self_contained: true
+    number_sections: true
+    code_folding: show
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preliminaries
+
+```{r knitr_init, echo = FALSE, cache = FALSE, warning = FALSE}
+library(knitr); library(rmdformats)
+
+# Global Options
+opts_chunk$set(echo=TRUE,
+               cache=FALSE,
+               prompt=FALSE,
+               tidy=FALSE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE)
+opts_knit$set(width=75)
+```
+
+```{r load_necessary_packages_for_analyses}
+# General Packages for data processing
+library(equatiomatic)
+library(patchwork)
+library(simputation)
+library(conflicted)
+library(here)
+library(magrittr)
+library(gtsummary)
+library(rsample)
+library(yardstick)
+library(rms)
+library(naniar)
+library(haven)
+library(broom)
+library(janitor)
+
+#Packages for count model
+library(countreg)
+
+#Packages for Multi-Categorical Model
+library(boot)
+library(pscl)
+
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("summarize", "Hmisc")
+#Packages for ordinal multi-categorical model
+
+library(tidyverse)
+
+
+theme_set(theme_bw())
+```
+
+
+# Background
+
+While humanity has made great strides over the past few decades in understanding mental health, there is still so much to learn in regards to the prevalence of poor mental health and what factors influence this figure. According to the [U.S. Administration for Children and Families](https://www.acf.hhs.gov/ecd/child-health-development/early-adversity) exposure to negative childhood experiences can often times lead to ["toxic stress"](https://developingchild.harvard.edu/science/key-concepts/toxic-stress/) that results in permanent developmental changes. These developmental changes can show up in many different short and long term health effects. Reducing the amount of trauma that children experience can hopefully play a role in improving general outlook on life as well as reducing the likelihood of health problems in the future.
+
+# Research Questions
+
+1. Are negative childhood experiences reflected in recent mental health as an adult?
+
+2. Do negative childhood experiences have an effect on adult income level?
+
+# My Data
+
+All data comes from the CDC via the [Behavior Risk Factor Surveillance System (BRFSS)](https://www.cdc.gov/brfss/index.html). Data was obtained during the 2020 collection period. It is the largest conducted health survey in the world, getting more than 400,000 respondents per year. 
+
+
+## Data Ingest
+
+In order to properly download and use the ASCII files from BRFSS data,  a variable layout needs to be used as the column names for the file. Data ingestion method was obtained via [Michael Minn](https://michaelminn.net/tutorials/r-brfss/index.html).
+
+```{r}
+# columns <- read.csv("data/2020-column-layout.csv")
+# 
+# columns$File_Width <- sapply(1:nrow(columns), function(y) ifelse(y < nrow(columns),
+#                     columns$Starting_Column[y + 1] - columns$Starting_Column[y], 1))
+# 
+# columns <- columns[columns$File_Width > 0,]
+```
+
+
+Here I ingest the ASCII file. Note that this file has over 400,000 observations as well as 278 variables and takes a bit of time to process. Later I will save a tidy data set that incorporates the set used for the analysis. 
+
+```{r}
+# responses = read.fwf("data/LLCP2020.ASC ", widths = columns$File_Width, col.names = columns$Variable_Name)
+```
+
+
+```{r}
+# saveRDS(responses, "BRFSS_2020_raw.Rds")
+```
+
+
+
+```{r}
+# Use this to read in the raw data directly
+responses <- read_rds("BRFSS_2020_raw.Rds")
+```
+
+
+
+## Tidying Data
+
+```{r}
+#Creating an identifier for observations
+responses <- responses %>%
+  mutate(id = row_number())
+```
+
+
+Since the participant identification number is hidden, I opted to add the row number as an identifier for the survey. I also convert codebook values to meaningful groups. The state values are changed to their abbreviation, and binary predictors are changed to either 'yes' or 'no' based on the respondent having experienced the adverse childhood experience. All non-numeric variables are converted to factors and the income categories are collapsed down to 3 categories. 
+
+
+```{r}
+responses_complete <- responses %>%
+  clean_names()
+
+responses_complete <- responses_complete %>%
+  rename(state = x_state,
+         income = income2) %>% # Changing state values to their meaningful abbreviations
+  mutate(state = case_when(state == 1 ~ "AL",
+                           state == 2 ~ "AK",
+                           state == 4 ~ "AZ",
+                           state == 5 ~ "AR",
+                           state == 6 ~ "CA",
+                           state == 8 ~ "CO",
+                           state == 9 ~ "CT",
+                           state == 10 ~ "DE",
+                           state == 11 ~ "DC",
+                           state == 12 ~ "FL",
+                           state == 13 ~ "GA",
+                           state == 15 ~ "HI",
+                           state == 16 ~ "ID",
+                           state == 17 ~ "IL",
+                           state == 18 ~ "IN",
+                           state == 19 ~ "IA",
+                           state == 20 ~ "KS",
+                           state == 21 ~ "KY",
+                           state == 22 ~ "LA",
+                           state == 23 ~ "ME",
+                           state == 24 ~ "MD",
+                           state == 25 ~ "MA",
+                           state == 26 ~ "MI",
+                           state == 27 ~ "MN",
+                           state == 28 ~ "MS",
+                           state == 29 ~ "MO",
+                           state == 30 ~ "MT",
+                           state == 31 ~ "NE",
+                           state == 32 ~ "NV",
+                           state == 33 ~ "NH",
+                           state == 34 ~ "NJ",
+                           state == 35 ~ "NM",
+                           state == 36 ~ "NY",
+                           state == 37 ~ "NC",
+                           state == 38 ~ "ND",
+                           state == 39 ~ "OH",
+                           state == 40 ~ "OK",
+                           state == 41 ~ "OR",
+                           state == 42 ~ "PA",
+                           state == 44 ~ "RI",
+                           state == 45 ~ "SC",
+                           state == 46 ~ "SD",
+                           state == 47 ~ "TN",
+                           state == 48 ~ "TX",
+                           state == 49 ~ "UT",
+                           state == 50 ~ "VT",
+                           state == 51 ~ "VA",
+                           state == 53 ~ "WA",
+                           state == 54 ~ "WV",
+                           state == 55 ~ "WI",
+                           state == 56 ~ "WY",
+                           state == 66 ~ "Guam",
+                           state == 72 ~ "PR"),
+         income = case_when(income == 1 ~ "10000",
+                           income == 2 ~ "15000",
+                           income == 3 ~ "20000",
+                           income == 4 ~ "25000",
+                           income == 5 ~ "30000",
+                           income == 6 ~ "50000",
+                           income == 7 ~ "75000",
+                           income == 8 ~ "+75000"),
+         acedeprs = case_when(acedeprs == 1 ~ "yes",
+                              acedeprs == 2 ~ "no"),
+         acedrink = case_when(acedrink == 1 ~ "yes",
+                              acedrink == 2 ~ "no"),
+         acedrugs = case_when(acedrugs == 1 ~ "yes",
+                              acedrugs == 2 ~ "no"),
+         aceprisn = case_when(aceprisn == 1 ~ "yes",
+                              aceprisn == 2 ~ "no"),
+         acedivrc = case_when(acedivrc == 1 ~ "yes",
+                              acedivrc == 2 ~ "no"),
+         acepunch = case_when(acepunch == 1 ~ "no",
+                              acepunch == 2 ~ "yes",
+                              acepunch == 3 ~ "yes"),
+         acehurt1 = case_when(acehurt1 == 1 ~ "no",
+                              acehurt1 == 2 ~ "yes",
+                              acehurt1 == 3 ~ "yes"),
+         acehvsex = case_when(acehvsex == 1 ~ "no",
+                              acehvsex == 2 ~ "yes",
+                              acehvsex == 3 ~ "yes"),
+         acetouch = case_when(acetouch == 1 ~ "no",
+                              acetouch == 2 ~ "yes",
+                              acetouch == 3 ~ "yes"))
+
+responses_complete <- responses_complete %>%
+  mutate(state = as.factor(state),
+         imonth = as.factor(imonth),
+         cadult1 = as.factor(cadult1),
+         ladult1 = as.factor(ladult1),
+         landsex = as.factor(landsex),
+         birthsex = as.factor(birthsex),
+         income = as.factor(income),
+         acedeprs = as.factor(acedeprs),
+         acedrink = as.factor(acedrink),
+         acedrugs = as.factor(acedrugs),
+         aceprisn = as.factor(aceprisn),
+         acepunch = as.factor(acepunch),
+         acehurt1 = as.factor(acehurt1),
+         acetouch = as.factor(acetouch),
+         acedivrc = as.factor(acedivrc),
+         acehvsex = as.factor(acehvsex))
+
+
+responses_complete <- responses_complete %>%
+  mutate(income1 = fct_recode(income,
+                              "30k" = "10000",
+                              "30k" = "15000",
+                              "30k" = "20000",
+                              "30k" = "25000",
+                              "30k" = "30000",
+                              "75k" = "50000",
+                              "75k" = "75000",
+                              "+75k" = "+75000"),
+         income_n = as.numeric(income1))
+
+responses_complete$menthlth[responses_complete$menthlth == 88] <- 0
+```
+
+Lastly I need to reorder the income variable properly. 
+
+```{r}
+responses_complete <- responses_complete %>%
+  mutate(income1 = fct_relevel(income1, "30k",
+                               "75k", "+75k"))
+```
+
+
+
+```{r}
+#Selecting the desired columns, saved as a new data set. 
+responses_complete <- responses_complete %>%
+  select(id, state, imonth, iyear, cadult1, ladult1, landsex, birthsex, income, income1, income_n, menthlth, acedeprs, acedrink, aceprisn, acedrugs, acepunch, acehurt1, acetouch, acedivrc, acehvsex)
+```
+
+
+[CDC Modules Used by Category](https://www.cdc.gov/brfss/questionnaires/modules/category2020.htm) to determine with States participated in which module of the survey.
+
+```{r}
+# Building a list of states that are involved in the Adverse Childhood Experience Questionnaire. 
+state_list <- c("AL", "AZ", "DC", "FL", "GA", "HI", "ID", "IA", "KY", "MS", "MO", "MT", "NV", "ND", "RI", "SC", "SD", "TX", "UT", "VA", "WI", "WY")
+
+# Grouped states by region to filter down in sample size
+west_mtn_states <- c("AZ", "ID", "MT", "NV", "UT", "WY")
+south_state <- c("GA", "SC", "FL", "VA", "DC", "KY", "AL", "MS", "TX")
+```
+
+
+
+```{r}
+# Editing the filter criteria by state, adults, and the months of the interview
+responses_sample <- responses_complete %>%
+  filter(complete.cases(income, menthlth, acedeprs, acedrink, aceprisn, acedrugs, acepunch, acehurt1, acetouch, acedivrc, acehvsex)) %>%
+  filter(state %in% south_state & ladult1 == 1) %>%
+  filter(menthlth <= 30) %>%
+  select(-cadult1, -birthsex, -landsex) %>%
+  droplevels()
+
+```
+
+
+```{r}
+set.seed(4322022)
+responses_sample <- responses_sample %>%
+  slice_sample(., n = 2000)
+```
+
+
+
+```{r}
+# Use this code to read in the sample data directly
+# responses_sample <- read_rds("BRFSS_cc.Rds")
+```
+
+
+
+## Missingness
+
+
+Here I am going to observe missingness, however there should be nothing missing since this is a complete case analysis. For this analysis I am going to assume missing completely at random. 
+
+```{r}
+miss_var_summary(responses_sample)
+```
+
+```{r}
+n_case_complete(responses_sample)
+```
+
+
+
+## Tidied Tibble
+
+
+```{r}
+responses_sample
+```
+
+
+
+
+```{r}
+saveRDS(responses_sample, file = "BRFSS_cc.Rds")
+```
+
+
+
+
+
+
+# Codebook and Clean Data Summary
+
+
+## Summary
+
+1. Sample Size: The data within the `responses_sample` consists of subjects who participated in the BRFSS survey. The BRFSS survey included the Adverse Childhood Experience module, which was selectively completed by a subset of around half of the states in the U.S. This specific sample consists of 2000 individuals within the Southern region of states that were apart of the Adverse Childhood Experience module and were over the age of 18.  
+
+2. Missingness: Of the 2000 subjects, 1700 subjects have complete data on all of the variables. Complete cases were used for the outcome variables, and the variable with the highest amount missingness is `acepunch` at 207 observations. 
+
+3. Outcome(s): The outcome for the count regression is `menthlth`, a measure of the number of poor mental health days within the last 30 days ranging from 0 to 30. The outcome for the ordinal categorical analysis is `income1`, a 3-category variable of the income bracket that the individual belongs to. 
+
+4. All other variables listed below will serve as potential predictors for the models.
+
+5. A number of variables were included for identification and confirmation purposes. These variables included `id`, an identifier provided by us based on row number, `iyear` to confirm that all interviews took place during the same year, and `ladult` to confirm the respondent is over the age of 18. Other variables that were not used as predictors but included for sampling criteria were `state` (state that the respondent lives in) and `imonth` (month that the interview took place. )
+
+
+## Main Codebook
+
+```{r}
+responses_sample %>%
+  select(menthlth, income1, acedeprs, acedrink, acedrugs, aceprisn, acepunch, acehurt1, acedivrc, acetouch, acehvsex) %>%
+  tbl_summary(.,
+              label = list(
+                menthlth = "menthlth (# poor mental health days within past 30)",
+                income1 = "income1 (annual income group",
+                acedeprs = "acedeprs (Lived with someone who was depressed, mentally ill, or suicidal)",
+                acedrink = "acedrink (Lived with a problem drinker/alcoholic)",
+                acedrugs = "acedrugs(Lived with anyone who abused medications or street drugs)",
+                aceprisn = "aceprisn (Lived with anyone who served time in a prison/jail/correctional facility)",
+                acepunch = "acepunch (Did your parents/adults hit each other?)",
+                acehurt1 = "acehurt1 (Did your parents physically hurt you in any way, disregarding spanking?)",
+                acedivrc = "acedivrc (Were your parents separated or divorced?)",
+                acetouch = "acetouch (Did anyone 5+ years older than you ever touch you sexually?)",
+                acehvsex = "acehvsex (Did anyone 5+ years older than you force you to have sex with them?)"),
+              stat = list( all_continuous() ~
+                             "{median} [{min} to {max}]"))
+              
+```
+
+
+
+## Data Distribution Description
+
+```{r}
+responses_sample %>% describe(.) %>% Hmisc::html()
+```
+
+
+
+### Splitting the Data
+
+Thanks to the large amount of observations available from the data, I am comfortable splitting the data into training and test sets. 70% of the data will be utilized as training data, with the remaining 30% as test data. 
+
+```{r}
+set.seed(4322022)
+brfss_split <- initial_split(responses_sample, prop = 0.60)
+
+brfss_train <- training(brfss_split)
+brfss_test <- testing(brfss_split)
+```
+
+
+# Analysis 1 (Count)
+
+
+
+### Are negative childhood experiences reflected in recent mental health as an adult?
+
+
+
+## Outcome
+
+
+First I am going to look at my outcome of interest which is the number of poor mental health days during the past 30 days, `menthlth` . I stratify the outcome variable by interview month, and then observe the distribution of the outcome variable alone. 
+
+
+```{r}
+ggplot(brfss_train, aes(x = state, y = menthlth)) + 
+  geom_violin(fill = "red2")
+```
+
+```{r}
+ggplot(brfss_train, aes(x = menthlth)) +
+  geom_histogram(col = "white", fill = "blue")
+```
+
+```{r}
+brfss_train %>% count(menthlth)
+```
+
+
+
+According to the histogram above, we can see an extremely high count of zero poor mental health days compared to the rest, 863 out of 1200. Interestingly, the next highest frequency is 30, which also is the maximum potential value. There also appears to be higher frequencies of 10, 15, and 20 which I suspect may be an indication that respondents tend to round estimates. 
+
+
+
+## Poisson Regression Model
+
+First I am going to fit a regular Poisson model. I'm going to look at how the model fits and then perform an over dispersion test to see whether a negative binomial model would fit better. I will also do a comparison to a zero-inflated negative binomial model as this data consists of an inflated count of 0s.
+
+
+```{r}
+mod_poiss <- glm(menthlth ~ aceprisn + acedrink + acedivrc + acedrugs + acedeprs + acehurt1 + acepunch + acehvsex,
+                 family = poisson(),
+                 data = brfss_train)
+
+summary(mod_poiss)
+```
+
+Above a summary of the Poisson model is displayed. The default options for the model are the 'no' group for every predictor. Based on this model, exposure to all but one adverse childhood experience increases the coefficient, with the largest apparent effects by the variables `acedeprs` and `acedrugs`. Assuming an individual had zero experience to adverse childhood effects, we see that the intercept is 0.88, and exp(0.88) = 2.4 predicted poor mental health days. According to this model, individuals who lived with someone in prison, jail, or a correctional facility have a predictive difference of `exp(-0.21912)` poor mental health days versus those who have not, or a 20% decrease in poor mental health days count. 
+
+
+
+## Overdispersion Test
+
+I wanted to test for over dispersion in the regular Poisson model do determine whether a quasi-poisson or negative binomial regression model would fit better. Here I am testing for over dispersion based on the test provided by Gelman and Hill. 
+
+
+```{r}
+yhat <- predict(mod_poiss, type = "response")
+n <- arm::display(mod_poiss)$n
+```
+
+```{r}
+k <- arm::display(mod_poiss)$k
+```
+
+```{r}
+z <- (brfss_train$menthlth - yhat) / sqrt(yhat)
+cat("overdispersion ratio is ", sum(z^2)/ (n - k), "\n")
+```
+
+```{r}
+cat("p value of overdispersion test is ",
+    pchisq(sum(z^2), df = n - k, lower.tail = FALSE), "\n")
+```
+
+The results above show an extremely large overdispersion ratio of 17.49, as well as further indication that overdispersion is present. I am going to fit a negative binomial model, as well as a zero-inflated negative binomial and compare them to determine a final model. 
+
+
+
+
+## NB/ZINB Model Comparison
+
+Here I am going to do a comparison of the two potential models. First I'll fit them and show a summary. 
+
+```{r}
+mod_nb <- MASS:: glm.nb(menthlth ~ aceprisn + acedrink + acedivrc + acedrugs + acedeprs + acehurt1 + acepunch + acehvsex, 
+                   link = log, data = brfss_train)
+
+mod_zinb <- pscl::zeroinfl(menthlth ~ aceprisn + acedrink + acedivrc + acedrugs + acedeprs + acehurt1 + acepunch + acehvsex,
+                   dist = "negbin", data = brfss_train)
+```
+
+
+```{r}
+summary(mod_nb)
+```
+
+
+The negative binomial model fit above shows a slightly lower intercept to the Poisson model. The greatest effect size we see if for the `acedeprs` variable, and the `acehvsex` predictor has actually changed directions. Now, individuals in the 'yes' category for `acehvsex` are associated with a lower number of poor mental health days, according to this model. 
+
+
+```{r}
+summary(mod_zinb)
+```
+
+The summary above shows the zero-inflated negative binomial model, which includes a logit model for predicting excess zeros as well as a Poisson model for predicting the counts. For the logit model, we see that other than `acedrink` as 'yes', all other predictors in the 'yes' category are associated with lower odds of `menthlth` = 0. In terms of the count model, we see that individuals with `acedivrc` or `aceprisn`
+in the 'yes' category are associated with a lower number of poor mental health days, according to this model. 
+
+### Training Fit
+
+Here I am going to look at the r-squared and log(likelihood) of the models.
+
+```{r, message = FALSE}
+#Augmenting NB model to grab predictions
+mod_nb_aug <- augment(mod_nb, brfss_train,
+                      type.predict = "response")
+
+#Store fitted values for ZINB
+mod_zinb_aug <- brfss_train %>%
+  mutate(".fitted" = fitted(mod_zinb, type = "response"),
+         ".resid" = resid(mod_zinb, type = "response"))
+```
+
+
+
+```{r}
+#Create a metric set
+mets <- metric_set(rsq, rmse, mae)
+
+mod_nb_sum <-
+  mets(mod_nb_aug, truth = menthlth, estimate = .fitted) %>%
+  mutate(model = "NB") %>% relocate(model)
+
+mod_zinb_sum <-
+  mets(mod_zinb_aug, truth = menthlth, estimate = .fitted) %>%
+  mutate(model = "ZINB") %>% relocate(model)
+```
+
+
+```{r}
+# Obtain a training summary from fits earlier
+train_sum <- bind_rows(mod_nb_sum, mod_zinb_sum) %>%
+  pivot_wider(names_from = model,
+              values_from = .estimate)
+train_rbind <- rbind(train_sum, "LogLik" = c(logLik(mod_nb), logLik(mod_zinb)))
+train_rbind %>%
+  select(-.estimator) %>% kable(dig = 3)
+```
+
+
+The table above shows that the ZINB model has a slightly higher training r-squared value, as well as a lower RMSE and MAE. So far, it seems like the ZINB model has the best fit. Lastly, I will look at the Vuong test results as a final comparison. 
+
+
+
+### Vuong Test
+
+
+The Vuong test allows for the comparison of the predicted probabilities of two non-nested models. As seen in the table below, the Vuong test appears to signify that the zero-inflated model shows significant improvement over the regular negative binomial model.  
+
+```{r}
+pscl::vuong(mod_zinb, mod_nb)
+```
+
+
+
+
+### Model Assumptions
+
+
+In assessing the models assumptions, I am going to look at their residual vs. fitted values. The only major difference that we see is the ZINB model has a similar deviance in residuals as the fitted values change
+
+
+```{r, fig.width =8}
+g1 <- ggplot(mod_nb_aug, aes(x = .fitted, y = .resid)) +
+    geom_point() +
+    labs(title = "Residuals vs. Fitted `menthlth`",
+         subtitle = "Negative Binomial Regression model")
+
+g2 <- ggplot(mod_zinb_aug, aes(x = .fitted, y = .resid)) +
+    geom_point() +
+    labs(title = "Residuals vs. Fitted `menthlth`",
+         subtitle = "Zero-Inflated Negative Binomial Regression model")
+
+g1 + g2
+```
+
+
+## Final Model 
+
+Based on the model comparison above, the final model that I am going to choose is the Zero-Inflated Negative Binomial model. The ZINB model has a slightly better training performance, as well as reasoning that the zero-inflated model makes sense. 
+
+
+```{r}
+tidy(exp(coef(mod_zinb))) %>%
+  kable(digits = 3)
+```
+
+Above I am displaying a tidy display of the exponentiated coefficients for the zero-inflated model. This allows us to directly interpret the odds ratios in the zero model, as well as the differences in counts for the count model. When looking at the model for `menthlth` = 0, the odds of reporting no poor mental health days are only 32% as high for individuals having had exposure to depression versus those not exposed to depression, when all other variables are held constant. The only variable in the zero model associated with an increased likelihood of no poor mental health days is `acedrink` in the 'yes' category. 
+
+
+Below is the rootogram for the negative binomial model. 
+
+
+```{r}
+rootogram(mod_zinb, max = 30)
+```
+
+The rootogram shown above is for the zero-inflated negative binomial model. The counts of 0 are matched, as expected, but we do a a range of overfitting and underfitting occurring. We can see some underfitting of 10, 15, and 20, which I suspect is due to rounding by respondents. A significant amount of underfitting is also occurring for values of 30. 
+
+
+### Test Validation
+
+
+Lastly, I am going to do test validation and compare the results to the training fit. 
+
+
+Below I store the prediction values and then bind the results together to the test dataset. 
+
+```{r}
+# Obtain predictions on test data
+test_zinb <- predict(mod_zinb, newdata = brfss_test,
+                     type.predict = "response")
+
+#Binding predictions to test data set
+test_res <- bind_cols(brfss_test, 
+                      pre_zinb = test_zinb)
+```
+
+
+```{r}
+# Obtaining the metrics from the test predictions
+zinb_test_sum <- mets(test_res, truth = menthlth, estimate = pre_zinb) %>%
+  mutate(model = "ZINB")
+```
+
+
+```{r}
+#Obtain a test summary from models
+test_sum <- zinb_test_sum %>%
+  pivot_wider(names_from = model, 
+              values_from = .estimate)
+```
+
+
+```{r}
+#Rename summary models to compare
+train_sum <- train_sum %>%
+  rename(train_NB = NB,
+         train_ZINB = ZINB)
+test_sum <- test_sum %>%
+  rename(test_ZINB = ZINB)
+```
+
+
+Finally I am displaying the test metrics in a tidy table. 
+
+```{r}
+# Combine test and training summaries
+total_sum <- bind_cols(train_sum,
+                       test_sum %>% select(test_ZINB))
+total_sum %>% select(.metric, train_ZINB, test_ZINB) %>%
+  kable(dig = 3)
+```
+
+When comparing the results, we see that the r-squared are the exact same, however the model actually displays lower test RMSE and MAE. 
+
+# Analysis 2 (Ordinal Multi-Categorical)
+
+
+### Do negative childhood experiences have an effect on adult income level?
+
+
+## Outcome 
+
+
+First I am going to look at the outcome variable `income`. Below is a visualization of the percentages by groups, showing that there is no major variation in the number of individuals that belong to a certain group. 
+
+```{r}
+ggplot(brfss_train, aes(x =income1, fill = income1)) + 
+  geom_bar(aes(y = (..count..)/sum(..count..))) +
+  geom_text(aes(y = (..count..)/sum(..count..),
+                label = scales::percent((..count..) /
+                                          sum(..count..))),
+            stat = "count", vjust = 1,
+            color = "white", size = 5) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Dark2") +
+  guides(fill = "none") +
+  labs(y = "Percentage")
+```
+
+
+## Cross-Tabulation
+
+
+I wanted to show a cross-tabulation of income by state. This table shows that some states have a much higher number of respondents, like Florida and Virginia. At a glance it also appears that certain states have a higher income disparity with no additional information. DC actually appears to have a higher number of respondents with income over $75,000. Due to a lack of meaningful observations, I am unable to include state as a predictor in the model for this analysis. 
+
+```{r}
+ggplot(brfss_train, aes(x = state, y = income1)) +
+  geom_count()
+```
+
+
+## Spearman Plot
+
+I want to take a look at the spearman plot to get an idea of fitting potential interaction within the model. When looking below, potential predictors that are considered are `acepunch`, `acehurt`, `acedivrc` and `acedrink`. I want to look at a further cross tabulation of these variables and see if an interaction term can be reasonable. 
+
+```{r}
+plot(spearman2(income1 ~ acedrink + acedeprs + acedrugs + acepunch + acehurt1 + acedivrc + acetouch, data = brfss_train))
+```
+
+
+```{r}
+xtabs(~ acepunch + acehurt1, data = brfss_train)
+```
+
+```{r}
+xtabs(~ acedivrc + acedrink, data = brfss_train)
+```
+
+I'm going to decide to go ahead and try an interaction model with two interaction. 
+
+## Multi-Categorical Model
+
+
+
+```{r}
+# Fitting the main effects model
+mod_polr <- polr(income1 ~ acedivrc + acedrink + acedeprs + acedrugs + acepunch + acehurt1 + acetouch,
+                 data = brfss_train, Hess = TRUE)
+
+# Fitting the interaction model
+mod_polr_ix <- polr(income1 ~ acedivrc * acedrink + acedeprs + acedrugs + acepunch * acehurt1 + acetouch,
+                 data = brfss_train, Hess = TRUE)
+
+```
+
+
+After fitting the models using the `polr` function, I'm going to display the summaries of the models below. 
+
+```{r}
+summary(mod_polr)
+```
+
+Above a summary is shown of the main effects model, which shows coefficients for all predictors when changed to the 'yes' category. When observing the coefficients, with a mix of negative and positive effects for predictors. Positive coefficients indicate that increasing the coefficient value would lead to an increased association to higher income categories, and vice versa for negative coefficients. Here we only see positive coefficients for `acedeprs` and `acedrugs` for the 'yes' category. 
+
+
+```{r}
+summary(mod_polr_ix)
+```
+
+The summary was computed for the interaction model as well, which includes an additional interaction term between `acedivrc` and `acedrink` as well as `acepunch` and `acehurt1` when both are in the 'yes' category. The interaction terms actually show the largest effect sizes, and are two of four positive coefficients. The interaction model actually shows a lower AIC as well when compared to the main effects model. 
+
+
+```{r}
+anova(mod_polr_ix, mod_polr)
+```
+
+I wanted to run an anova for the main effects and the interaction model to see if the interaction is worth keeping. The anova does not show that the interaction model has a statistically significant improvement in fit versus the main effects model. However, the interaction model shows a lower residual deviance, as well as a lower AIC displayed above. I am going to observe training predictions as a final comparison of the models. 
+
+
+### Training Predictions
+
+Next I am going to look at a cross-tabulation of predictions using the training data. 
+
+```{r}
+addmargins(table(predict(mod_polr), brfss_train$income1))
+```
+
+In the table above, we can see that the model does not even classify any values into the $75k category. The model severely over-predicts the number of individuals in the 30k income bracket and severely under-fits the rest. 
+
+
+```{r}
+addmargins(table(predict(mod_polr_ix), brfss_train$income1))
+```
+
+The training predictions for the interaction model are just slightly worse, with more accurate low income predictions, but a lower number of correct +75k income predictions. 
+
+
+
+## Final Model
+
+The main model I am using is going to be the main effects model. I'm going to fit it here using `lrm` for using `rms` tools. 
+
+```{r}
+d <- datadist(brfss_train)
+options(datadist = "d")
+mod_lrm <- lrm(income1 ~ acedivrc + acedrink + acedeprs + acedrugs + acepunch + acehurt1 + acetouch,
+               data = brfss_train, x = T, y = T)
+
+mod_lrm
+```
+
+Some summary statistics are shown above for the model. Of note we can see an extremely low Nagelkerke R-squared of 0.01, and a C statistic of 0.542. These inform me that the model appears to have pretty weak performance in predictions of income category. A C-statistic of 0.542 is just slightly better than the performance of random guessing. The largest coefficient for a predictor is the positive value for the `acedrugs` 'yes' category. 
+
+To interpret the odds ratio associated with `acedrugs`, we read the exponent as an odds ratio. If a person has had experience living with someone who was depressed, mentally ill, or suicidal, then they have 1.29 times the odds of belonging to a higher income category versus someone without this adverse childhood experience. 
+
+
+### Assessing Proportional Odds Assumption
+
+In order to test the proportional odds assumption, I am going to compare it to a multinomial logit model. 
+
+```{r}
+(mod_multi <- nnet::multinom(income1 ~ acedivrc + acedrink + acedeprs + acedrugs + acepunch + acehurt1 + acetouch,
+                      data = brfss_train))
+```
+
+The proportional odds model fits 2 intercepts and 1 slope, whereas the multinomial model fits 2 intercepts and 14 slopes. This provides a difference of 13. 
+
+
+
+```{r}
+ll_polr <- logLik(mod_polr)
+
+ll_multi <- logLik(mod_multi)
+
+g <- as.numeric(-2 * (ll_polr[1] - ll_multi[1]))
+g
+
+pchisq(g, 13, lower.tail = FALSE)
+```
+
+
+Above we can see an extremely large p-value, which gives some indication that the proportional odds assumption fits as well as the multinomial model. 
+
+
+
+
+
+### Nomogram
+
+Below I included a nomogram for interpreting probabilities of falling into a specific income category. 
+
+```{r, fig.height = 7.5}
+fun.inc1 <- function(x) 1 - plogis(x)
+fun.inc3 <- function(x) 
+  plogis(x - mod_lrm$coef[1] + mod_lrm$coef[2])
+
+plot(nomogram(mod_lrm, fun = list('Prob Income < $35k' = fun.inc1,
+                                  'Prob Income > $75k' = fun.inc3)))
+```
+
+When looking above, we can get a clear sense of the impact that certain predictors have on affecting probability of belonging to each income category. We can see low point changes for `acetouch` and `acedeprs`, whereas `acedrugs` and `acepunch` have point differences of over 90. We can also see that lower point totals are associated with increased probability of belonging to the lowest income category, while increasing point totals increase the probability of belonging to the highest income category. The only variables that increase points when exposed to the adverse childhood experience are `acedrugs` and `acedeprs`, indicating that exposure to these adverse childhood events are associated with increased probabilities of higher income categories according to this model. 
+
+
+### Validation
+
+
+Lastly I am going to perform a validation on the model. Here is a bootstrap validation to display index corrected Somers' D and Nagelkerke R-squared. 
+
+```{r}
+set.seed(4322022); validate(mod_lrm)
+```
+
+The results above show extremely low index corrected values that again indicate this model does not have any relative predictive power on an individuals income category. The index-corrected Somers' D results in a C-statistic just better than 0.5, and the index-corrected R2 is almost at 0. 
+
+
+
+# Conclusions
+
+
+## Analysis 1 results
+
+
+  The results of analysis 1 indicate that while the ZINB model shows the best fit with regards to a count outcome, it still has poor predictive power. While an overall setback of the analysis lies in the fact that all predictors are binary, another problem lies in the modeling option itself. The extreme inflation of 0 values makes it difficult to effectively model as a count outcome. One way to improve the results for this analysis would be to obtain more granular data that can effectively model a range of numeric values. The other would be to reorganize the number of poor mental health days as a multicategorical variable. The latter is an attractive approach because we can increase representation of the 1-29 range of poor mental health days by combining them, and it is something that can be modeled without needing to improve the quality of the metrics obtained.
+  
+  
+## Analysis 2 results
+  
+  
+  The results of analysis 2 also indicated poor predictive power, and much of the reasoning is due to the limitations explained in analysis 1 results above. The lack of granularity in the data makes it difficult for the model to effectively predict between three groups, resulting in no predictions made for the 30k-75k income category. One way to improve this study would be to increase the sample size so that we can justify keeping some of the predictors as multicategorical variables. We could also potentially look at it as a binary outcome based on being over/under the median household income, for example.
+  
+  
+## Overall
+  
+  Expansions of this study should include looking at more granular data regarding adverse childhood experiences, as well as expanding onto overall/long-term mental health of an individual rather than recent mental health. People are often molded by their childhood upbringing and this study aims to shed some light on the effects that adults can experience due to their upbringing. The long term goal would be to improve mental health access to individuals and minimize the trauma that many children experience today. 
+  
+  As a result of doing this project, I have developed an awareness to the importance of focused research question. Something that I feel helped me along the way during this analysis was that I had developed a research question that I felt had a set goal and very focused predictors. Another major takeaway is the importance of really understanding the data. While I can justify the approach to my analysis, we can see that based on the results there are alternative ways to analyzing the data. It would have helped to really spend more time with the outcomes and thing whether or not alternative modeling approaches would be better. 
+
+
+# References
+
+1. Credit to the [CDC](https://www.cdc.gov/brfss/index.html) for public access to their BRFSS 2020 survey data.
+
+2. Credit to Michael Minn for his tutorial on importing BRFSS data into R, found [here](https://michaelminn.net/tutorials/r-brfss/index.html)
+
+3. Credit to Dr. Love and his resources for the 432-Statistical Methods II class at CWRU. 
+
+
